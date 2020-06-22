@@ -1,4 +1,3 @@
-
 #include <vga.h>
 
 
@@ -37,6 +36,8 @@
 
 #define BLACK 			0x00
 #define WHITE 			0x3F
+
+#define FONT_SIZE 8
 
 int current_color = 0x01;
 
@@ -91,7 +92,7 @@ PORT vga_port;
 
 /* vga driver functions */
 
-void    vga_process     ();
+void vga_process ();
 
 void write_regs (unsigned char * regs);
 
@@ -99,7 +100,11 @@ void create_window ( PARAM_VGA_CREATE_WINDOW * params);
 
 void draw_pixel (PARAM_VGA_DRAW_PIXEL * params);
 
- void draw_line (PARAM_VGA_DRAW_LINE * params);
+void draw_line (PARAM_VGA_DRAW_LINE * params);
+
+void draw_text (PARAM_VGA_DRAW_TEXT * params);
+
+void change_window(PARAM_VGA_CHANGE_FOCUS * params);
 
 void clear_screen();
 
@@ -120,6 +125,10 @@ int get_canvas_pixel(VGA_WINDOW * wnd, int x, int y);
 void set_canvas_pixel(VGA_WINDOW * wnd, int x, int y, int color);
 
 VGA_WINDOW * get_window(int id);
+
+void draw_character (VGA_WINDOW * wnd, int x, int y, int bg_color, int fg_color, char c);
+
+void draw_string (VGA_WINDOW * wnd, int x, int y, int bg_color, int fg_color, const char * str);
 
 int m_abs (int a);
 
@@ -209,29 +218,29 @@ void vga_process (PROCESS proc, PARAM param)
         msg = (VGA_WINDOW_MSG *) receive(&sender);
 
         /* process request from message */
-        switch (msg->cmd) 
+        switch (msg->cmd)
         {
 
             case VGA_CREATE_WINDOW:
                 create_window( (PARAM_VGA_CREATE_WINDOW *) &msg->u.create_window );
-
                 break;
 
             case VGA_DRAW_TEXT:
-                //draw_text( (PARAM_VGA_DRAW_TEXT *) &msg->u.draw_text );
+                draw_text( (PARAM_VGA_DRAW_TEXT *) &msg->u.draw_text );
                 break;
 
             case VGA_DRAW_PIXEL:
-                //draw_pixel( (PARAM_VGA_DRAW_PIXEL *) &msg->u.draw_pixel );
+                draw_pixel( (PARAM_VGA_DRAW_PIXEL *) &msg->u.draw_pixel );
                 break;
 
             case VGA_DRAW_LINE:
-                //draw_line( (PARAM_VGA_DRAW_LINE *) &msg->u.draw_line );
+                draw_line( (PARAM_VGA_DRAW_LINE *) &msg->u.draw_line );
+                break;
+
+            case VGA_CHANGE_FOCUS:
+                change_window( (PARAM_VGA_CHANGE_FOCUS *) &msg->u.change_focus );
                 break;
         }
-
-            build_quadtrees();
-    vga_render_windows();
 
         /* reply to sender */
         reply(sender);
@@ -315,7 +324,7 @@ void create_window ( PARAM_VGA_CREATE_WINDOW * params)
     window->color = current_color++;
 
     int bound_size = 1;
-    while (bound_size < window->frame.bound.width &&
+    while (bound_size < window->frame.bound.width ||
         bound_size < window->frame.bound.height) 
         {
             bound_size *= 2;
@@ -330,7 +339,8 @@ void create_window ( PARAM_VGA_CREATE_WINDOW * params)
     window->next = NULL;
     window->prev = NULL;
 	add_window_to_list(window);
-
+    build_quadtrees();
+    vga_render_windows();
 }
 
 /**************************************************************
@@ -351,6 +361,17 @@ void draw_pixel (PARAM_VGA_DRAW_PIXEL * params)
  /*************************************************************
  *                      API : DRAW TEXT                       * 
  *************************************************************/
+
+void draw_text (PARAM_VGA_DRAW_TEXT * params) 
+{
+    VGA_WINDOW * wnd = get_window(params->window_id);
+	if(wnd == NULL)
+		return;
+
+	/* print string */
+	draw_string(wnd, params->x, params->y, params->bg_color, params->fg_color, params->text);
+    vga_draw_canvas(wnd);
+}
 
  /*************************************************************
  *                     API : DRAW LINE                        *
@@ -441,6 +462,17 @@ void draw_line (PARAM_VGA_DRAW_LINE * params)
     vga_draw_canvas(wnd);
 }
 
+ /*************************************************************
+ *                     API : CHANGE WINDOW                    *
+ *************************************************************/
+
+ void change_window(PARAM_VGA_CHANGE_FOCUS * params)
+ {
+    bring_window_forward(params->window_id);
+    build_quadtrees();
+    vga_render_windows();
+ }
+
 /**************************************************************
  *                 PIXEL DRAWING UTILITIES                    *
  *************************************************************/
@@ -471,6 +503,36 @@ int m_abs (int a)
 	return a < 0 ? -a : a;
 }
 
+void draw_string (VGA_WINDOW * wnd, int x, int y, int bg_color, int fg_color, const char * str) {
+
+	while (*(str) != '\0') {
+		draw_character(wnd, x, y, bg_color, fg_color, *(str));
+		str++;
+		x+=8;
+	}
+}
+
+void draw_character (VGA_WINDOW * wnd, int x, int y, int bg_color, int fg_color, char c) {
+
+	int i, n;
+	unsigned char b;
+
+	for (i = 0; i < FONT_SIZE; i++) {
+
+		b = g_8x8_font[(((int)c)*FONT_SIZE)+i];
+
+		for (n = 0; n < FONT_SIZE; n++) {
+
+			if ((b>>n&1)) {
+				set_canvas_pixel(wnd, x+FONT_SIZE-n-1, y+i, fg_color);
+			} else {
+				set_canvas_pixel(wnd, x+FONT_SIZE-n-1, y+i, bg_color);
+			}
+		}
+	}
+}
+
+
 /**************************************************************
  *               WINDOW MANAGEMENT FUNCTIONS                  *
  *************************************************************/
@@ -489,13 +551,13 @@ VGA_WINDOW * get_window(int id)
 void vga_render_windows()
 {
     clear_screen();
-    if(!window_list_tail)
+    if(!window_list_head)
         return;
 
-    VGA_WINDOW * w_ptr = window_list_tail;
+    VGA_WINDOW * w_ptr = window_list_head;
     while(w_ptr != NULL) {
         vga_draw_window(w_ptr);
-        w_ptr = w_ptr->prev;
+        w_ptr = w_ptr->next;
     }
 }
 
@@ -504,19 +566,19 @@ void vga_draw_frame(VGA_WINDOW * window)
 	BOUND fb = window->frame.bound;
 
 	for(int x = fb.x; x < fb.x+fb.width; x++)
-		for(int y = fb.y; y < fb.y+1; y++)
-			set_pixel(window, x, y, window->color);
+		for(int y = fb.y; y < fb.y+10; y++)
+			set_pixel(window, x, y, WHITE);
     
     for(int y = fb.y; y < fb.y+fb.height; y++)
-        set_pixel(window, fb.x, y, window->color);
+        set_pixel(window, fb.x, y, WHITE);
 
     for(int y = fb.y; y < fb.y+fb.height; y++)
-        set_pixel(window, fb.x+fb.width-1, y, window->color);
+        set_pixel(window, fb.x+fb.width-1, y, WHITE);
 
     for(int x = fb.x; x < fb.x+fb.width; x++)
-        set_pixel(window, x, fb.y+fb.height-1, window->color);
+        set_pixel(window, x, fb.y+fb.height-1, WHITE);
 
-    // draw text
+    draw_frame_title(window);
 }
 
 void vga_draw_canvas(VGA_WINDOW * window)
@@ -525,8 +587,8 @@ void vga_draw_canvas(VGA_WINDOW * window)
 
 	for(int x = 0; x < cb.width; x++)
 		for(int y = 0; y < cb.height; y++)
-			//set_pixel(window, x+cb.x, y+cb.y, get_canvas_pixel(window, x, y));
-            ;
+			set_pixel(window, x+cb.x, y+cb.y, get_canvas_pixel(window, x, y));
+        
 }
 
 void vga_draw_window(VGA_WINDOW * window)
@@ -555,11 +617,31 @@ int get_canvas_pixel(VGA_WINDOW * wnd, int x, int y)
 
 void set_canvas_pixel(VGA_WINDOW * wnd, int x, int y, int color)
 {
-    if(x < 0 && x > wnd->canvas.bound.width-1)
+    if(x < 0 || x > wnd->canvas.bound.width-1)
         return;
-    if(y < 0 && y > wnd->canvas.bound.height-1)  
+    if(y < 0 || y > wnd->canvas.bound.height-1)  
         return;
     *(wnd->canvas.buffer + y * wnd->canvas.bound.width + x) = color;
+}
+
+void bring_window_forward(int window_id)
+{
+    VGA_WINDOW * wnd = get_window(window_id);
+	if(wnd == NULL)
+		return;
+
+    if(wnd == window_list_head)
+        return;
+
+    if(wnd == window_list_tail)
+        window_list_tail = wnd->prev;
+
+    wnd->prev->next = wnd->next;
+    wnd->next->prev = wnd->prev;
+    wnd->next = window_list_head;
+    window_list_head->prev = wnd;
+    wnd->prev = NULL;
+    window_list_head = wnd;
 }
 
 /********************************************************************************
@@ -811,7 +893,7 @@ void vga_test (PROCESS proc, PARAM param)
 	msg.u.create_window.title = "Window 1";
 	msg.u.create_window.x = 50;
 	msg.u.create_window.y = 50;
-	msg.u.create_window.width = 200;
+	msg.u.create_window.width = 100;
 	msg.u.create_window.height = 50;
 	send(vga_port, &msg);
 	unsigned int window1_id = msg.u.create_window.window_id;
@@ -819,23 +901,33 @@ void vga_test (PROCESS proc, PARAM param)
 	// Create Window 2
 	msg.cmd = VGA_CREATE_WINDOW;
 	msg.u.create_window.title = "Window 2";
-	msg.u.create_window.x = 140;
-	msg.u.create_window.y = 70;
-	msg.u.create_window.width = 70;
-	msg.u.create_window.height = 120;
+	msg.u.create_window.x = 10;
+	msg.u.create_window.y = 120;
+	msg.u.create_window.width = 150;
+	msg.u.create_window.height = 60;
 	send(vga_port, &msg);
 	unsigned int window2_id = msg.u.create_window.window_id;
 
 	// Create Window 3
 	msg.cmd = VGA_CREATE_WINDOW;
 	msg.u.create_window.title = "Window 3";
-	msg.u.create_window.x = 150;
-	msg.u.create_window.y = 60;
-	msg.u.create_window.width = 50;
-	msg.u.create_window.height = 50;
+	msg.u.create_window.x = 100;
+	msg.u.create_window.y = 30;
+	msg.u.create_window.width = 100;
+	msg.u.create_window.height = 100;
 	send(vga_port, &msg);
 	unsigned int window3_id = msg.u.create_window.window_id;
-/*
+
+    // Create Window 4
+	msg.cmd = VGA_CREATE_WINDOW;
+	msg.u.create_window.title = "Window 4";
+	msg.u.create_window.x = 120;
+	msg.u.create_window.y = 70;
+	msg.u.create_window.width = 100;
+	msg.u.create_window.height = 100;
+	send(vga_port, &msg);
+	unsigned int window4_id = msg.u.create_window.window_id;
+
 	// Draw some lines in Window 1
 	char current_color = 0;
 	for (int x = 0; x < 100; x += 2) {
@@ -868,7 +960,7 @@ void vga_test (PROCESS proc, PARAM param)
 	msg.u.draw_text.fg_color = 0x3f; // White
 	msg.u.draw_text.bg_color = 0;
 	send(vga_port, &msg);
-
+/*
 	// Draw some random pixels in Window 3
 	msg.cmd = VGA_DRAW_PIXEL;
 	msg.u.draw_pixel.window_id = window3_id;
@@ -882,19 +974,14 @@ void vga_test (PROCESS proc, PARAM param)
 		send(vga_port, &msg);
 		}
 	}
-
-    msg.cmd = VGA_DRAW_PIXEL;
-	msg.u.draw_pixel.window_id = window2_id;
-	current_color = 0;
-	for (int x = 3; x < 100; x += 5) {
-		for (int y = 3; y < 100; y += 5) {
-		msg.u.draw_pixel.x = x;
-		msg.u.draw_pixel.y = y;
-		msg.u.draw_pixel.color = current_color;
-		current_color = (current_color + 1) % 64;
-		send(vga_port, &msg);
-		}
-	}
 */
+    msg.cmd = VGA_CHANGE_FOCUS;
+    msg.u.change_focus.window_id = window1_id;
+    send(vga_port, &msg);
+    msg.u.change_focus.window_id = window2_id;
+    send(vga_port, &msg);
+    msg.u.change_focus.window_id = window3_id;
+    send(vga_port, &msg);
+
     become_zombie();
 }
